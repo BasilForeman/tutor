@@ -6,7 +6,6 @@ from bot.database.models import (
     LeadSource,
     Assignment,
     Payment,
-    AssignmentFinance,
 )
 
 print("Models imported successfully!")

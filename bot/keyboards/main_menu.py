@@ -9,7 +9,19 @@ def get_main_menu():
         ],
         [
             KeyboardButton(text="➕ Новая передача"),
+            KeyboardButton(text="📋 Список передач"),
+        ],
+        [
+            KeyboardButton(text="🔚 Завершить обучение"),
+        ],
+        [
+            KeyboardButton(text="📚 Учёт занятий"),
             KeyboardButton(text="💰 Финансы"),
+            KeyboardButton(text="💵 Записать платёж"),
+        ],
+        [
+            KeyboardButton(text="📣 Источники"),
+            KeyboardButton(text="📥 Заявки"),
         ],
     ]
 

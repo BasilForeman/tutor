@@ -1,7 +1,6 @@
 import os
-from collections.abc import Mapping
-
 import asyncio
+from collections.abc import Mapping
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -16,6 +15,12 @@ SCOPES = [
 
 
 HEADERS = {
+    "Tutors": [
+        "ID",
+        "Имя",
+        "Предмет",
+        "Дата создания",
+    ],
     "Assignments": [
         "ID",
         "Дата передачи",
@@ -54,6 +59,16 @@ HEADERS = {
 
 async def get_database_data():
     async with async_session() as session:
+
+        tutors_query = text("""
+            SELECT
+                id,
+                nickname,
+                subject,
+                created_at
+            FROM tutors
+            ORDER BY id
+        """)
 
         assignments_query = text("""
             SELECT
@@ -105,6 +120,10 @@ async def get_database_data():
             ORDER BY af.assignment_id
         """)
 
+        tutors = (
+            await session.execute(tutors_query)
+        ).mappings().all()
+
         assignments = (
             await session.execute(assignments_query)
         ).mappings().all()
@@ -147,11 +166,28 @@ async def get_database_data():
     ]
 
     return {
+        "Tutors": tutors,
         "Assignments": assignments,
         "Payments": payments,
         "Finances": finances,
         "Dashboard": dashboard_rows,
     }
+
+
+async def get_tutors_data():
+    async with async_session() as session:
+        query = text("""
+            SELECT
+                id,
+                nickname,
+                subject,
+                created_at
+            FROM tutors
+            ORDER BY id
+        """)
+
+        result = await session.execute(query)
+        return result.mappings().all()
 
 
 def get_spreadsheet():
@@ -180,7 +216,6 @@ def get_spreadsheet():
     return client.open_by_key(spreadsheet_id)
 
 
-
 def update_sheet(spreadsheet, sheet_name, rows):
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -191,91 +226,34 @@ def update_sheet(spreadsheet, sheet_name, rows):
             cols=20
         )
 
-    headers = HEADERS[sheet_name]
-    values = [headers]
+    values = [HEADERS[sheet_name]]
 
     for row in rows:
         if isinstance(row, Mapping):
-            values.append([
-                str(value) if value is not None else ""
-                for value in row.values()
-            ])
+            row_values = row.values()
         else:
-            values.append([
-                str(value) if value is not None else ""
-                for value in row
-            ])
+            row_values = row
 
+        values.append([
+            str(value) if value is not None else ""
+            for value in row_values
+        ])
+
+    # Сначала записываем актуальные данные.
     worksheet.update(
         range_name="A1",
         values=values,
         value_input_option="RAW"
     )
 
-    print(f"Лист {sheet_name}: записано {len(rows)} строк")
+    # После успешной записи очищаем старые строки,
+    # если записей стало меньше.
+    worksheet.batch_clear([
+        f"A{len(values) + 1}:T"
+    ])
 
-    try:
-        worksheet = spreadsheet.worksheet(sheet_name)
-    except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(
-            title=sheet_name,
-            rows=1000,
-            cols=20
-        )
-
-    headers = HEADERS[sheet_name]
-
-    values = [headers]
-
-    for row in rows:
-        if isinstance(row, Mapping):
-            values.append([
-                str(value) if value is not None else ""
-                for value in row.values()
-            ])
-        else:
-            values.append([
-                str(value) if value is not None else ""
-                for value in row
-            ])
-
-    worksheet.update(
-        range_name="A1",
-        values=values,
-        value_input_option="RAW"
-    )
-
-    print(f"Лист {sheet_name}: записано {len(rows)} строк")
-    try:
-        worksheet = spreadsheet.worksheet(sheet_name)
-    except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(
-            title=sheet_name,
-            rows=1000,
-            cols=20
-        )
-
-    headers = HEADERS[sheet_name]
-
-    values = [headers]
-
-    for row in rows:
-        if isinstance(row, Mapping):
-            values.append([
-                str(value) if value is not None else ""
-                for value in row.values()
-            ])
-        else:
-            values.append([
-                str(value) if value is not None else ""
-                for value in row
-            ])
-
-    worksheet.clear()
-
-    worksheet.update(
-        values=values,
-        range_name="A1"
+    print(
+        f"Лист {sheet_name}: записано {len(rows)} строк"
     )
 
 
@@ -290,6 +268,28 @@ def sync_to_google_sheets(data):
         )
 
     print("Google Sheets: синхронизация завершена!")
+
+
+def sync_one_sheet_to_google_sheets(sheet_name, rows):
+    spreadsheet = get_spreadsheet()
+
+    update_sheet(
+        spreadsheet,
+        sheet_name,
+        rows
+    )
+
+
+async def sync_tutors():
+    tutors = await get_tutors_data()
+
+    await asyncio.to_thread(
+        sync_one_sheet_to_google_sheets,
+        "Tutors",
+        tutors
+    )
+
+    return True
 
 
 async def sync_all():
