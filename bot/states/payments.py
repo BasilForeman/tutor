@@ -2,7 +2,9 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class PaymentForm(StatesGroup):
-    assignment = State()
+    tutor = State()
     amount = State()
+    allocations = State()
     notes = State()
     confirmation = State()
+    history_tutor = State()

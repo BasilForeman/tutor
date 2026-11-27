@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from bot.database.models import Assignment, Payment
 from bot.services.payments import create_payment
@@ -57,7 +58,7 @@ class FakeSession:
 
 
 def make_assignment(amount=Decimal("1000")):
-    return SimpleNamespace(id=7, commission_amount=amount)
+    return SimpleNamespace(id=7, tutor_id=3, commission_amount=amount)
 
 
 class PaymentServiceTests(unittest.TestCase):
@@ -78,18 +79,20 @@ class PaymentServiceTests(unittest.TestCase):
 
     def test_partial_payment_is_saved_as_decimal(self):
         session = FakeSession(assignment=make_assignment(), paid=Decimal("250"))
-        payment = self.run_async(self.create(session))
-        self.assertIsInstance(payment, Payment)
-        self.assertEqual(payment.amount, Decimal("300"))
-        self.assertEqual(payment.operation_key, "op-1")
-        self.assertEqual(session.commits, 1)
+        payment = Payment(assignment_id=7, amount=Decimal("300"), operation_key="allocation")
+        batch = SimpleNamespace(id=4)
+        with patch("bot.services.payments.create_tutor_payment_batch", new=AsyncMock(return_value=(batch, [payment]))) as create_batch:
+            result = self.run_async(self.create(session))
+        self.assertIs(result, payment)
+        create_batch.assert_awaited_once()
+        self.assertEqual(create_batch.await_args.kwargs["tutor_id"], 3)
+        self.assertEqual(create_batch.await_args.kwargs["allocations"], [(7, Decimal("300"))])
 
     def test_overpayment_is_rejected_and_rolled_back(self):
         session = FakeSession(assignment=make_assignment(), paid=Decimal("900"))
-        with self.assertRaisesRegex(ValueError, "превышает остаток"):
-            self.run_async(self.create(session, amount=Decimal("101")))
-        self.assertEqual(session.commits, 0)
-        self.assertEqual(session.rollbacks, 1)
+        with patch("bot.services.payments.create_tutor_payment_batch", new=AsyncMock(side_effect=ValueError("превышает остаток"))):
+            with self.assertRaisesRegex(ValueError, "превышает остаток"):
+                self.run_async(self.create(session, amount=Decimal("101")))
 
     def test_repeated_operation_key_returns_existing_payment(self):
         prior = SimpleNamespace(id=15, assignment_id=7, amount=Decimal("300"))

@@ -5,12 +5,13 @@ from aiogram.types import Message
 from html import escape
 
 from bot.database.connection import async_session
-from bot.services.tutors import create_tutor, get_tutors, get_tutor_by_id, update_tutor, archive_tutor
+from bot.services.tutors import create_tutor, get_tutors, get_tutor_by_id, get_tutor_profile, update_tutor, archive_tutor
 from bot.keyboards.tutors import (
     get_tutors_menu,
     get_subject_keyboard,
 )
 from bot.keyboards.main_menu import get_main_menu
+from bot.keyboards.main_menu import get_records_menu
 
 
 router = Router()
@@ -26,12 +27,12 @@ class TutorForm(StatesGroup):
     archive_id = State()
 
 
-@router.message(F.text == "👨‍🏫 Репетиторы")
+@router.message(F.text == "👥 Репетиторы")
 async def tutors_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "👨‍🏫 Управление репетиторами\n\nВыбери действие:",
-        reply_markup=get_tutors_menu()
+        reply_markup=get_records_menu()
     )
 
 
@@ -195,18 +196,50 @@ async def tutor_search(message: Message, state: FSMContext):
     if not query:
         await message.answer("Введи ID, имя или предмет текстом.")
         return
+    profile = None
     async with async_session() as session:
         try:
             tutor = await get_tutor_by_id(session, int(query)) if query.isdigit() else None
             tutors = [tutor] if tutor else await get_tutors(session, active_only=None, search=query)
+            if tutor:
+                profile = await get_tutor_profile(session, tutor.id)
         except ValueError:
             tutors = await get_tutors(session, active_only=None, search=query)
     await state.clear()
     if not tutors:
         await message.answer("Репетиторы не найдены.", reply_markup=get_tutors_menu())
         return
-    cards = [f"<b>#{item.id} {escape(item.nickname)}</b>\nПредмет: {escape(item.subject or 'Не указан')}\nСтатус: {'Активен' if item.is_active else 'В архиве'}" for item in tutors[:20]]
-    await message.answer("\n\n".join(cards), parse_mode="HTML", reply_markup=get_tutors_menu())
+    if profile:
+        summary = profile["summary"]
+        lines = [
+            f"<b>#{summary['id']} {escape(summary['nickname'])}</b>",
+            f"Предмет: {escape(summary['subject'] or 'Не указан')} | Статус: {'Активен' if summary['is_active'] else 'В архиве'}",
+            f"Передачи: {summary['assignments']} | активные: {summary['active_assignments']} | закрытые: {summary['closed_assignments']}",
+            f"Занятия: {summary['completed_lessons']} проведено, пробных {summary['trial_lessons']}, платных {summary['paid_lessons']}",
+            f"Комиссия: {summary['commission']} ₽ | оплачено нетто: {summary['paid']} ₽ | текущий долг: {summary['debt']} ₽",
+            f"Денежных возвратов: {summary['refund_count']} на {summary['refunds']} ₽",
+        ]
+        if profile["assignments"]:
+            lines.append("\n<b>Последние передачи:</b>")
+            lines.extend(
+                f"• №{item['id']} от {item['assignment_date']}: {escape(item['client'])}; "
+                f"{'закрыта' if item['is_closed'] else 'активна'}; комиссия {item['commission_amount']} ₽; "
+                f"долг {item['remaining_amount']} ₽; занятий {item['completed_lessons']} "
+                f"(пробных {item['trial_lessons']}, платных {item['paid_lessons']})"
+                for item in profile["assignments"][:10]
+            )
+        if profile["payments"]:
+            lines.append("\n<b>Последние платежи:</b>")
+            lines.extend(
+                f"• Платёж №{item['batch']['id']} от {item['batch']['payment_date']}: {item['batch']['amount']} ₽; "
+                f"распределено {item['batch']['allocated']} ₽"
+                for item in profile["payments"][:10]
+            )
+        await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=get_tutors_menu())
+        return
+    await state.set_state(TutorForm.search)
+    cards = [f"<b>#{item.id} {escape(item.nickname)}</b> — {escape(item.subject or 'Предмет не указан')} — ID {item.id}" for item in tutors[:20]]
+    await message.answer("Найдено. Для полной карточки введи ID репетитора:\n\n" + "\n".join(cards), parse_mode="HTML", reply_markup=get_tutors_menu())
 
 
 @router.message(F.text == "✏️ Изменить репетитора")

@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from bot.database.connection import async_session
-from bot.keyboards.main_menu import get_main_menu
+from bot.keyboards.main_menu import get_main_menu, get_lessons_menu
 from bot.services.assignments import get_assignments
 from bot.services.lessons import create_lesson
 from bot.states.lessons import LessonForm
@@ -23,7 +23,13 @@ def keyboard(values):
     )
 
 
-@router.message(F.text == "📚 Учёт занятий")
+@router.message(F.text == "📚 Занятия")
+async def open_lessons_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Учёт занятий:", reply_markup=get_lessons_menu())
+
+
+@router.message(F.text == "➕ Записать занятие")
 async def start_lesson(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:

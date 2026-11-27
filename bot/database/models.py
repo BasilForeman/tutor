@@ -257,6 +257,25 @@ Index("uq_lead_sources_active_name_ci", func.lower(func.btrim(LeadSource.name)),
       postgresql_where=LeadSource.is_active.is_(True))
 
 
+class TutorPaymentBatch(Base):
+    """One actual tutor remittance, optionally split into assignment allocations."""
+    __tablename__ = "payment_batches"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_payment_batches_amount_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tutor_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("tutors.id"), nullable=False, index=True)
+    payment_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    operation_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.current_timestamp())
+
+    tutor: Mapped["Tutor"] = relationship()
+    allocations: Mapped[list["Payment"]] = relationship(back_populates="batch")
+
+
 class Payment(Base):
     __tablename__ = "payments"
     __table_args__ = (
@@ -271,6 +290,11 @@ class Payment(Base):
     assignment_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("assignments.id"),
+        nullable=False,
+    )
+    payment_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("payment_batches.id", name="fk_payments_payment_batch_id"),
         nullable=False,
     )
     payment_date: Mapped[date] = mapped_column(
@@ -297,7 +321,11 @@ class Payment(Base):
     assignment: Mapped["Assignment"] = relationship(
         back_populates="payments"
     )
+    batch: Mapped["TutorPaymentBatch"] = relationship(back_populates="allocations")
     refunds: Mapped[list["PaymentRefund"]] = relationship(back_populates="payment")
+
+
+Index("uq_payments_batch_assignment", Payment.payment_batch_id, Payment.assignment_id, unique=True)
 
 
 class CommissionAccrual(Base):
@@ -476,12 +504,6 @@ Index(
     Payment.operation_key,
     unique=True,
     postgresql_where=Payment.operation_key.is_not(None),
-)
-
-Index(
-    "uq_adjustments_operation_key",
-    AssignmentAdjustment.operation_key,
-    unique=True,
 )
 
 Index(

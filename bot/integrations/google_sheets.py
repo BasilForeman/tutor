@@ -27,7 +27,7 @@ HEADERS = {
     "Leads": ["ID", "Ученик ID", "Ученик", "Источник ID", "Источник", "Предмет", "Статус", "Причина отказа", "Создан"],
     "Assignments": ["ID", "Lead ID", "Дата", "Репетитор ID", "Репетитор", "Ученик ID", "Ученик", "Источник", "Кто передал", "Ставка", "Режим комиссии", "Комиссия", "Ставка комиссии %", "Срок оплаты", "Закрыта", "Причина закрытия", "Примечание"],
     "Lessons": ["ID", "Assignment ID", "Дата", "Тип", "Статус", "Заработок", "Примечание"],
-    "Payments": ["ID", "Assignment ID", "Дата", "Сумма", "Возвраты", "Нетто", "Примечание"],
+    "Payments": ["Batch ID", "Allocation ID", "Assignment ID", "Дата", "Получено всего", "Распределено", "Возвраты", "Нетто распределения", "Примечание"],
     "Finances": ["Assignment ID", "Репетитор", "Ученик", "Комиссия", "Оплачено нетто", "Остаток", "Согласовано"],
     "Adjustments": ["ID", "Assignment ID", "Комиссия до", "Комиссия после", "Разница", "Причина", "Автор", "Создан"],
     "Dashboard": ["Показатель", "Значение", "Период / определение", "Сформировано"],
@@ -64,11 +64,12 @@ async def get_database_data():
                     JOIN clients c ON c.id=a.client_id JOIN lead_sources s ON s.id=a.source_id
                     ORDER BY a.id""",
         "Lessons": "SELECT id, assignment_id, lesson_date, lesson_type, status, amount, notes FROM lessons ORDER BY id",
-        "Payments": """SELECT p.id, p.assignment_id, p.payment_date, p.amount,
+        "Payments": """SELECT p.payment_batch_id, p.id, p.assignment_id, p.payment_date,
+                    b.amount AS received_total, p.amount AS allocated,
                     COALESCE(r.refunded, 0) AS refunded, p.amount-COALESCE(r.refunded, 0) AS net,
-                    p.notes FROM payments p LEFT JOIN
+                    b.notes FROM payments p JOIN payment_batches b ON b.id=p.payment_batch_id LEFT JOIN
                     (SELECT payment_id, SUM(amount) AS refunded FROM payment_refunds GROUP BY payment_id) r
-                    ON r.payment_id=p.id ORDER BY p.id""",
+                    ON r.payment_id=p.id ORDER BY p.payment_batch_id, p.id""",
         "Finances": """SELECT af.assignment_id, t.nickname AS tutor, c.nickname AS client,
                     af.commission_amount, af.paid_amount, af.remaining_amount, af.agreed_commission
                     FROM assignment_finances af JOIN assignments a ON a.id=af.assignment_id

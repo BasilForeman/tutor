@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from bot.database.connection import async_session
-from bot.keyboards.main_menu import get_main_menu
+from bot.keyboards.main_menu import get_main_menu, get_transfers_menu
 from bot.services.assignments import create_assignment, create_manual_assignment, get_assignments
 from bot.services.finance import close_assignment
 from bot.services.leads import get_leads
@@ -48,6 +48,12 @@ def parse_id(text):
 
 
 @router.message(F.text == "➕ Новая передача")
+async def open_transfers_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Передачи и заявки:", reply_markup=get_transfers_menu())
+
+
+@router.message(F.text == "➕ Оформить передачу")
 async def start_assignment(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:

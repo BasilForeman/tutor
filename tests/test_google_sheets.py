@@ -80,6 +80,12 @@ class GoogleSheetsTests(unittest.TestCase):
         self.assertEqual(worksheet.updates[0]["range_name"], "A1:D2")
         self.assertEqual(worksheet.updates[0]["values"][0], HEADERS["Dashboard"])
 
+    def test_payments_export_distinguishes_receipt_from_assignment_allocation(self):
+        self.assertEqual(HEADERS["Payments"], [
+            "Batch ID", "Allocation ID", "Assignment ID", "Дата", "Получено всего",
+            "Распределено", "Возвраты", "Нетто распределения", "Примечание",
+        ])
+
 
 class GoogleSheetsRetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_transient_error_retries_and_records_success(self):
