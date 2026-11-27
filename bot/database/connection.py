@@ -15,7 +15,7 @@ if not DATABASE_URL:
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,
+    echo=os.getenv("SQL_ECHO", "false").strip().lower() == "true",
     pool_pre_ping=True
 )
 

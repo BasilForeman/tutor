@@ -18,3 +18,5 @@ htmlcov/
 
 # macOS
 .DS_Store
+venv_new/
+/backups/

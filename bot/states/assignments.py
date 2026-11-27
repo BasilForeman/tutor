@@ -2,11 +2,22 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class AssignmentForm(StatesGroup):
+    lead_entry_mode = State()
+    manual_tutor_name = State()
+    manual_tutor_subject = State()
+    manual_client_name = State()
+    manual_client_contact = State()
+    manual_source_name = State()
+    manual_subject = State()
     lead = State()
     tutor = State()
     assigned_by = State()
     rate = State()
+    commission_mode = State()
     commission_multiplier = State()
+    commission_amount = State()
+    commission_percentage = State()
+    subscription_purchase_date = State()
     payment_due_date = State()
     confirmation = State()
     close_assignment = State()

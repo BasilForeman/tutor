@@ -1,4 +1,5 @@
 from decimal import Decimal, InvalidOperation
+from datetime import date
 from uuid import uuid4
 
 from aiogram import F, Router
@@ -25,7 +26,8 @@ def keyboard(rows):
 
 
 @router.message(F.text == "💰 Финансы")
-async def show_finances(message: Message):
+async def show_finances(message: Message, state: FSMContext):
+    await state.clear()
     async with async_session() as session:
         result = await session.execute(text("""
             SELECT a.id, a.tutor_id, a.client_id, a.payment_due_date,
@@ -51,6 +53,8 @@ async def show_finances(message: Message):
         lines.append(
             f"Передача №{row['id']} | ученик №{row['client_id']} | "
             f"репетитор №{row['tutor_id']} | {label} | {due}"
+            + (f" | ⚠️ просрочка {(date.today() - row['payment_due_date']).days} дн."
+               if row["remaining_amount"] > 0 and row["payment_due_date"] and row["payment_due_date"] < date.today() else "")
         )
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=get_main_menu())
 
@@ -59,12 +63,19 @@ async def show_finances(message: Message):
 async def start_payment(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:
-        assignments = await get_assignments(session)
+        result = await session.execute(text("""
+            SELECT a.id, a.client_id, a.tutor_id, f.remaining_amount
+            FROM assignments AS a
+            JOIN assignment_finances AS f ON f.assignment_id = a.id
+            WHERE f.remaining_amount > 0
+            ORDER BY a.id DESC
+        """))
+        assignments = result.mappings().all()
     if not assignments:
-        await message.answer("Сначала создай передачу.", reply_markup=get_main_menu())
+        await message.answer("Сейчас нет начисленной комиссии для оплаты.", reply_markup=get_main_menu())
         return
     rows = [
-        f"{item.id} | ученик {item.client_id}, репетитор {item.tutor_id}, комиссия {item.commission_amount}"
+        f"{item['id']} | ученик {item['client_id']}, репетитор {item['tutor_id']}, остаток {item['remaining_amount']}"
         for item in assignments
     ]
     rows.append(CANCEL)

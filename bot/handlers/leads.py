@@ -7,13 +7,20 @@ from aiogram.fsm.context import FSMContext
 from bot.database.connection import async_session
 from bot.services.clients import create_client, get_clients
 from bot.services.lead_sources import get_lead_sources
-from bot.services.leads import create_lead, get_leads
+from bot.services.leads import (
+    create_lead, get_leads, get_lead_by_id, get_lead_history,
+    update_lead, update_lead_status,
+)
+from bot.services.clients import get_client_by_id
+from bot.services.lead_sources import get_lead_source_by_id
 from bot.keyboards.leads import (
     get_leads_menu,
     get_lead_cancel_keyboard,
     get_lead_clients_keyboard,
     get_lead_sources_keyboard,
     get_lead_skip_keyboard,
+    get_lead_status_keyboard,
+    get_lead_filter_keyboard,
 )
 from bot.states.leads import LeadForm
 
@@ -51,10 +58,18 @@ async def start_lead(message: Message, state: FSMContext):
 @router.message(LeadForm.source, F.text == "❌ Отмена")
 @router.message(LeadForm.subject, F.text == "❌ Отмена")
 @router.message(LeadForm.notes, F.text == "❌ Отмена")
+@router.message(LeadForm.search, F.text == "❌ Отмена")
+@router.message(LeadForm.edit_id, F.text == "❌ Отмена")
+@router.message(LeadForm.edit_subject, F.text == "❌ Отмена")
+@router.message(LeadForm.edit_notes, F.text == "❌ Отмена")
+@router.message(LeadForm.status_id, F.text == "❌ Отмена")
+@router.message(LeadForm.status, F.text == "❌ Отмена")
+@router.message(LeadForm.lost_reason, F.text == "❌ Отмена")
+@router.message(LeadForm.filter_status, F.text == "❌ Отмена")
 async def cancel_lead(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Создание заявки отменено.",
+        "Действие с заявкой отменено.",
         reply_markup=get_leads_menu(),
     )
 
@@ -206,6 +221,7 @@ async def enter_notes(message: Message, state: FSMContext):
             source_id=data["source_id"],
             subject=data.get("subject"),
             notes=notes,
+            changed_by=str(message.from_user.id if message.from_user else "telegram"),
         )
 
     await state.clear()
@@ -254,3 +270,189 @@ async def back_to_main(message: Message, state: FSMContext):
         "Главное меню:",
         reply_markup=get_main_menu(),
     )
+
+
+@router.message(F.text == "🔎 Найти / карточка заявки")
+async def lead_search_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(LeadForm.search)
+    await message.answer("Введи ID, имя ученика, предмет или комментарий заявки:")
+
+
+@router.message(LeadForm.search)
+async def lead_search(message: Message, state: FSMContext):
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("Введи ID или поисковый текст.")
+        return
+    async with async_session() as session:
+        if query.isdigit():
+            lead = await get_lead_by_id(session, int(query))
+            leads = [lead] if lead else []
+        else:
+            leads = await get_leads(session, active_only=None, search=query)
+        cards = []
+        for lead in leads[:20]:
+            client = await get_client_by_id(session, lead.client_id)
+            source = await get_lead_source_by_id(session, lead.source_id)
+            history = await get_lead_history(session, lead.id)
+            history_text = "\n".join(
+                f"• {escape(event.old_status or '—')} → {escape(event.new_status)}"
+                f" ({escape((event.reason or '').strip() or 'без причины')}; {escape(event.changed_by)})"
+                for event in (history or [])[-8:]
+            ) or "История пока пуста"
+            cards.append(
+                f"<b>Заявка #{lead.id}</b>\nУченик: {escape(client.nickname if client else 'Не найден')}\n"
+                f"Источник: {escape(source.name if source else 'Не найден')}\nПредмет: {escape(lead.subject or 'Не указан')}\n"
+                f"Статус: {escape(lead.status)}\nПричина потери: {escape(lead.lost_reason or '—')}\n"
+                f"<b>История статусов:</b>\n{history_text}"
+            )
+    await state.clear()
+    if not cards:
+        await message.answer("Заявки не найдены.", reply_markup=get_leads_menu())
+    else:
+        await message.answer("\n\n".join(cards), parse_mode="HTML", reply_markup=get_leads_menu())
+
+
+@router.message(F.text == "✏️ Изменить заявку")
+async def lead_edit_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(LeadForm.edit_id)
+    await message.answer("Введи ID заявки для изменения предмета и комментария:")
+
+
+@router.message(LeadForm.edit_id)
+async def lead_edit_id(message: Message, state: FSMContext):
+    try:
+        lead_id = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Нужен числовой ID.")
+        return
+    async with async_session() as session:
+        lead = await get_lead_by_id(session, lead_id)
+    if not lead:
+        await state.clear()
+        await message.answer("Заявка не найдена.", reply_markup=get_leads_menu())
+        return
+    await state.update_data(lead_id=lead_id)
+    await state.set_state(LeadForm.edit_subject)
+    await message.answer("Введи новый предмет или «⏭ Пропустить», чтобы очистить:")
+
+
+@router.message(LeadForm.edit_subject)
+async def lead_edit_subject(message: Message, state: FSMContext):
+    subject = (message.text or "").strip()
+    if not subject:
+        await message.answer("Введи предмет или «⏭ Пропустить».")
+        return
+    await state.update_data(subject="" if subject == "⏭ Пропустить" else subject)
+    await state.set_state(LeadForm.edit_notes)
+    await message.answer("Введи новый комментарий или «⏭ Пропустить», чтобы очистить:")
+
+
+@router.message(LeadForm.edit_notes)
+async def lead_edit_notes(message: Message, state: FSMContext):
+    notes = (message.text or "").strip()
+    if not notes:
+        await message.answer("Введи комментарий или «⏭ Пропустить».")
+        return
+    data = await state.get_data()
+    async with async_session() as session:
+        lead = await update_lead(session, data["lead_id"], subject=data["subject"], notes="" if notes == "⏭ Пропустить" else notes)
+    await state.clear()
+    await message.answer(f"✅ Заявка #{lead.id} обновлена.", reply_markup=get_leads_menu())
+
+
+@router.message(F.text == "🔄 Изменить статус заявки")
+async def lead_status_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(LeadForm.status_id)
+    await message.answer("Введи ID заявки:")
+
+
+@router.message(LeadForm.status_id)
+async def lead_status_id(message: Message, state: FSMContext):
+    try:
+        lead_id = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("Нужен числовой ID.")
+        return
+    async with async_session() as session:
+        lead = await get_lead_by_id(session, lead_id)
+    if not lead:
+        await state.clear()
+        await message.answer("Заявка не найдена.", reply_markup=get_leads_menu())
+        return
+    await state.update_data(lead_id=lead_id)
+    await state.set_state(LeadForm.status)
+    await message.answer(f"Текущий статус: {lead.status}. Выбери новый:", reply_markup=get_lead_status_keyboard())
+
+
+@router.message(LeadForm.status)
+async def lead_status_select(message: Message, state: FSMContext):
+    statuses = {"🆕 Новая": "new", "🔄 В работе": "in_progress", "✅ Передана": "assigned", "❌ Потеряна": "lost"}
+    status = statuses.get((message.text or "").strip())
+    if not status:
+        await message.answer("Выбери статус кнопкой.", reply_markup=get_lead_status_keyboard())
+        return
+    await state.update_data(status=status)
+    if status == "lost":
+        await state.set_state(LeadForm.lost_reason)
+        await message.answer("Почему заявка потеряна? Укажи причину:", reply_markup=get_lead_cancel_keyboard())
+        return
+    data = await state.get_data()
+    try:
+        async with async_session() as session:
+            lead = await update_lead_status(session, data["lead_id"], status, changed_by=str(message.from_user.id if message.from_user else "telegram"))
+    except ValueError as error:
+        await message.answer(str(error), reply_markup=get_leads_menu())
+        await state.clear()
+        return
+    await state.clear()
+    await message.answer(f"✅ Статус заявки #{lead.id}: {lead.status}", reply_markup=get_leads_menu())
+
+
+@router.message(LeadForm.lost_reason)
+async def lead_lost_reason(message: Message, state: FSMContext):
+    reason = (message.text or "").strip()
+    if not reason:
+        await message.answer("Причина не может быть пустой.")
+        return
+    data = await state.get_data()
+    try:
+        async with async_session() as session:
+            lead = await update_lead_status(session, data["lead_id"], "lost", lost_reason=reason,
+                                            changed_by=str(message.from_user.id if message.from_user else "telegram"))
+    except ValueError as error:
+        await message.answer(str(error), reply_markup=get_leads_menu())
+        await state.clear()
+        return
+    await state.clear()
+    await message.answer(f"✅ Заявка #{lead.id} отмечена потерянной. Причина сохранена в истории.", reply_markup=get_leads_menu())
+
+
+@router.message(F.text == "🔍 Фильтр заявок")
+async def lead_filter_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(LeadForm.filter_status)
+    await message.answer("Выбери статус:", reply_markup=get_lead_filter_keyboard())
+
+
+@router.message(LeadForm.filter_status)
+async def lead_filter(message: Message, state: FSMContext):
+    statuses = {"🆕 Новая": "new", "🔄 В работе": "in_progress", "✅ Передана": "assigned", "❌ Потеряна": "lost"}
+    value = (message.text or "").strip()
+    if value != "Все статусы" and value not in statuses:
+        await message.answer("Выбери значение кнопкой.", reply_markup=get_lead_filter_keyboard())
+        return
+    async with async_session() as session:
+        leads = await get_leads(session, status=statuses.get(value))
+        cards = []
+        for lead in leads[:30]:
+            client = await get_client_by_id(session, lead.client_id)
+            cards.append(f"#{lead.id} | {escape(client.nickname if client else 'Ученик не найден')} | {escape(lead.subject or 'Предмет не указан')} | {escape(lead.status)}")
+    await state.clear()
+    if not cards:
+        await message.answer("Заявок с таким статусом нет.", reply_markup=get_leads_menu())
+    else:
+        await message.answer("<b>Результаты:</b>\n" + "\n".join(cards), parse_mode="HTML", reply_markup=get_leads_menu())

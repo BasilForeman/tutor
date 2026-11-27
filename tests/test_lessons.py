@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
-from bot.database.models import Assignment, Lesson
+from bot.database.models import Assignment, CommissionAccrual, Lesson
 from bot.services.lessons import create_lesson
 
 
@@ -12,7 +12,9 @@ class FakeSession:
     def __init__(self, prior_paid_lessons=0, closed=False):
         self.prior_paid_lessons = prior_paid_lessons
         self.assignment = SimpleNamespace(
-            id=7, is_closed=closed, short_term_lesson_limit=4, payment_due_date=None
+            id=7, is_closed=closed, short_term_lesson_limit=4, payment_due_date=None,
+            commission_mode="rate_multiplier", commission_amount=Decimal("4000"),
+            commission_percentage=None,
         )
         self.added = []
         self.commits = 0
@@ -84,6 +86,8 @@ class LessonServiceTests(unittest.TestCase):
         session, operation = self.create(session=FakeSession(prior_paid_lessons=3))
         self.run_async(operation)
         self.assertEqual(session.assignment.payment_due_date, date(2026, 1, 5))
+        accrual = next(item for item in session.added if isinstance(item, CommissionAccrual))
+        self.assertEqual((accrual.event_type, accrual.amount), ("threshold", Decimal("4000")))
 
     def test_closed_assignment_rejects_lesson(self):
         session, operation = self.create(session=FakeSession(closed=True))
@@ -97,6 +101,15 @@ class LessonServiceTests(unittest.TestCase):
         self.assertEqual(lesson.amount, Decimal("1500"))
         self.assertEqual(lesson.lesson_type, "paid")
         self.assertEqual(session.commits, 1)
+
+    def test_percent_commission_records_each_paid_lesson_accrual(self):
+        session = FakeSession()
+        session.assignment.commission_mode = "percent"
+        session.assignment.commission_percentage = Decimal("10")
+        _, operation = self.create(session=session, amount=Decimal("1500"))
+        self.run_async(operation)
+        accrual = next(item for item in session.added if isinstance(item, CommissionAccrual))
+        self.assertEqual((accrual.event_type, accrual.amount), ("lesson", Decimal("150.00")))
 
 
 if __name__ == "__main__":

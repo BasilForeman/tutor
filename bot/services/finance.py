@@ -1,5 +1,8 @@
 from decimal import Decimal, ROUND_HALF_UP
+from hashlib import sha256
 from typing import Tuple
+
+from sqlalchemy.exc import IntegrityError
 
 
 SHORT_TERM_PERCENT = Decimal("0.25")
@@ -23,11 +26,13 @@ def short_term_commission(earnings: Decimal, lesson_count: int, lesson_limit: in
 async def close_assignment(session, assignment_id, reason, author, operation_key):
     from sqlalchemy import func, select
 
-    from bot.database.models import Assignment, AssignmentAdjustment, Lesson
+    from bot.database.models import Assignment, AssignmentAdjustment, CommissionAccrual, Lesson
 
-    reason = (reason or "").strip()
-    author = (author or "").strip()
-    operation_key = (operation_key or "").strip()
+    if not all(isinstance(value, str) for value in (reason, author, operation_key)):
+        raise ValueError("Причина, автор и ключ должны быть текстом")
+    reason = reason.strip()
+    author = author.strip()
+    operation_key = operation_key.strip()
     if not reason:
         raise ValueError("Укажите причину завершения обучения")
     if not author:
@@ -84,13 +89,31 @@ async def close_assignment(session, assignment_id, reason, author, operation_key
         )
         lesson_count, earnings = lesson_stats.one()
         earnings = earnings or Decimal("0")
-        within_limit, target_amount = short_term_commission(
-            earnings,
-            lesson_count,
-            assignment.short_term_lesson_limit,
-        )
+        # The 25% early-close rule is the default for the standard rate-multiplier
+        # agreement. Preserve individually negotiated fixed/manual/subscription terms.
+        commission_mode = getattr(assignment, "commission_mode", "rate_multiplier")
+        if commission_mode == "rate_multiplier":
+            within_limit, target_amount = short_term_commission(
+                earnings,
+                lesson_count,
+                assignment.short_term_lesson_limit,
+            )
+        elif commission_mode == "percent":
+            percent = assignment.commission_percentage
+            target_amount = (earnings * percent / Decimal("100")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            within_limit = True
+        else:
+            within_limit, target_amount = False, Decimal("0.00")
 
         previous_amount = assignment.commission_amount
+        if commission_mode == "percent":
+            previous_amount = await session.scalar(
+                select(func.coalesce(func.sum(CommissionAccrual.amount), 0)).where(
+                    CommissionAccrual.assignment_id == assignment_id
+                )
+            ) or Decimal("0")
         latest_adjustment = await session.scalar(
             select(AssignmentAdjustment)
             .where(AssignmentAdjustment.assignment_id == assignment_id)
@@ -100,15 +123,35 @@ async def close_assignment(session, assignment_id, reason, author, operation_key
         if latest_adjustment:
             previous_amount = latest_adjustment.new_amount
 
+        if commission_mode in {"fixed", "manual"}:
+            accrued_so_far = await session.scalar(
+                select(func.coalesce(func.sum(CommissionAccrual.amount), 0)).where(
+                    CommissionAccrual.assignment_id == assignment_id
+                )
+            ) or Decimal("0")
+            if assignment.commission_amount > accrued_so_far:
+                session.add(CommissionAccrual(
+                    assignment_id=assignment_id,
+                    event_type="closure",
+                    amount=assignment.commission_amount - accrued_so_far,
+                    operation_key=f"closure:{sha256(operation_key.encode()).hexdigest()}",
+                ))
+
         adjustment = None
         if within_limit:
             if target_amount > 0 and assignment.payment_due_date is None:
                 from datetime import date
                 assignment.payment_due_date = date.today()
-            detail = (
-                f"{reason} | Короткое обучение: {lesson_count} платных занятий, "
-                f"заработок {earnings}; комиссия 25%"
-            )
+            if commission_mode == "percent":
+                detail = (
+                    f"{reason} | Комиссия {assignment.commission_percentage}% от заработка "
+                    f"по {lesson_count} платным занятиям; заработок {earnings}"
+                )
+            else:
+                detail = (
+                    f"{reason} | Короткое обучение: {lesson_count} платных занятий, "
+                    f"заработок {earnings}; комиссия 25%"
+                )
             adjustment = AssignmentAdjustment(
                 assignment_id=assignment_id,
                 previous_amount=previous_amount,
@@ -128,6 +171,79 @@ async def close_assignment(session, assignment_id, reason, author, operation_key
         await session.commit()
         await session.refresh(assignment)
         return assignment, adjustment
+    except Exception:
+        await session.rollback()
+        raise
+
+
+async def adjust_assignment_commission(session, assignment_id, new_amount, reason, author, operation_key):
+    from sqlalchemy import select, text
+    from bot.database.models import Assignment, AssignmentAdjustment
+
+    if not isinstance(new_amount, Decimal) or not new_amount.is_finite() or new_amount < 0:
+        raise ValueError("Итоговая комиссия должна быть конечной неотрицательной Decimal")
+    if not all(isinstance(value, str) for value in (reason, author, operation_key)):
+        raise ValueError("Причина, автор и ключ должны быть текстом")
+    reason = reason.strip()
+    author = author.strip()
+    operation_key = operation_key.strip()
+    if not reason or not author or not operation_key or len(operation_key) > 128:
+        raise ValueError("Укажите причину, автора и корректный ключ корректировки")
+
+    existing = await session.scalar(select(AssignmentAdjustment).where(
+        AssignmentAdjustment.operation_key == operation_key
+    ))
+    if existing:
+        if (existing.assignment_id != assignment_id or existing.new_amount != new_amount
+                or existing.reason != reason or existing.author != author):
+            raise ValueError("Ключ операции уже использован для другой корректировки")
+        return existing
+
+    try:
+        assignment = await session.scalar(
+            select(Assignment).where(Assignment.id == assignment_id).with_for_update()
+        )
+        if not assignment:
+            raise ValueError("Передача не найдена")
+        existing = await session.scalar(select(AssignmentAdjustment).where(
+            AssignmentAdjustment.operation_key == operation_key
+        ))
+        if existing:
+            if (existing.assignment_id != assignment_id or existing.new_amount != new_amount
+                    or existing.reason != reason or existing.author != author):
+                raise ValueError("Ключ операции уже использован для другой корректировки")
+            return existing
+        current = await session.execute(text("""
+            SELECT commission_amount FROM assignment_finances WHERE assignment_id = :assignment_id
+        """), {"assignment_id": assignment_id})
+        row = current.mappings().first()
+        if not row:
+            raise ValueError("Финансовое состояние передачи не найдено")
+        previous_amount = row["commission_amount"]
+        adjustment = AssignmentAdjustment(
+            assignment_id=assignment_id,
+            previous_amount=previous_amount,
+            new_amount=new_amount,
+            difference=new_amount - previous_amount,
+            reason=reason,
+            author=author,
+            operation_key=operation_key,
+        )
+        session.add(adjustment)
+        await session.commit()
+        await session.refresh(adjustment)
+        return adjustment
+    except IntegrityError as error:
+        await session.rollback()
+        existing = await session.scalar(select(AssignmentAdjustment).where(
+            AssignmentAdjustment.operation_key == operation_key
+        ))
+        if existing and (existing.assignment_id == assignment_id and existing.new_amount == new_amount
+                and existing.reason == reason and existing.author == author):
+            return existing
+        if existing:
+            raise ValueError("Ключ операции уже использован для другой корректировки") from error
+        raise
     except Exception:
         await session.rollback()
         raise

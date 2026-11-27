@@ -52,13 +52,18 @@ CREATE INDEX IF NOT EXISTS ix_assignment_adjustments_assignment_id
 CREATE UNIQUE INDEX IF NOT EXISTS uq_adjustments_operation_key
     ON assignment_adjustments(operation_key);
 
-CREATE OR REPLACE VIEW assignment_finances AS
+-- PostgreSQL cannot change an existing view column type with CREATE OR REPLACE.
+-- Migration 0001 made this relation a derived view (any legacy table was kept
+-- under assignment_finances_legacy_0001), so dropping only the view is safe.
+DROP VIEW IF EXISTS assignment_finances;
+
+CREATE VIEW assignment_finances AS
 SELECT a.id AS assignment_id,
        CASE
            WHEN a.is_closed THEN COALESCE(latest.new_amount, a.commission_amount)
            WHEN lessons.paid_count >= a.short_term_lesson_limit THEN a.commission_amount
            ELSE 0::NUMERIC
-       END AS commission_amount,
+       END::NUMERIC(12,2) AS commission_amount,
        COALESCE(payments.paid_amount, 0::NUMERIC) AS paid_amount,
        CASE
            WHEN a.is_closed THEN COALESCE(latest.new_amount, a.commission_amount)

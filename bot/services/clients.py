@@ -2,6 +2,7 @@
 from typing import Optional
 
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.models import Client
@@ -13,6 +14,8 @@ async def create_client(
     contact: Optional[str] = None,
     notes: Optional[str] = None,
 ) -> Client:
+    if not isinstance(nickname, str):
+        raise ValueError("Имя ученика должно быть текстом")
     nickname = nickname.strip()
 
     if not nickname:
@@ -34,22 +37,35 @@ async def create_client(
         notes=notes.strip() if notes else None,
     )
 
-    session.add(client)
-    await session.commit()
-    await session.refresh(client)
+    try:
+        session.add(client)
+        await session.commit()
+        await session.refresh(client)
+    except IntegrityError as error:
+        await session.rollback()
+        raise ValueError("Ученик с таким именем уже существует") from error
 
     return client
 
 
 async def get_clients(
     session: AsyncSession,
-    active_only: bool = True,
+    active_only: Optional[bool] = True,
+    search: Optional[str] = None,
 ) -> list[Client]:
 
     query = select(Client).order_by(Client.id.desc())
 
-    if active_only:
+    if active_only is True:
         query = query.where(Client.is_active.is_(True))
+    elif active_only is False:
+        query = query.where(Client.is_active.is_(False))
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        query = query.where(
+            Client.nickname.ilike(pattern) | Client.contact.ilike(pattern)
+            | Client.notes.ilike(pattern)
+        )
 
     result = await session.scalars(query)
 
@@ -102,8 +118,12 @@ async def update_client(
     if notes is not None:
         client.notes = notes.strip() or None
 
-    await session.commit()
-    await session.refresh(client)
+    try:
+        await session.commit()
+        await session.refresh(client)
+    except IntegrityError as error:
+        await session.rollback()
+        raise ValueError("Ученик с таким именем уже существует") from error
 
     return client
 

@@ -19,11 +19,36 @@ from sqlalchemy import (
     func,
     true,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class FSMState(Base):
+    __tablename__ = "fsm_states"
+
+    bot_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=0)
+    business_connection_id: Mapped[str] = mapped_column(String(128), primary_key=True, default="")
+    destiny: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+
+class DebtReminderLog(Base):
+    __tablename__ = "debt_reminder_log"
+
+    admin_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    reminder_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.current_timestamp())
 
 
 class Tutor(Base):
@@ -36,6 +61,7 @@ class Tutor(Base):
     )
     nickname: Mapped[str] = mapped_column(String, nullable=False)
     subject: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true())
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         server_default=func.current_timestamp(),
@@ -112,6 +138,9 @@ class Assignment(Base):
         CheckConstraint("commission_amount >= 0", name="ck_assignments_commission_nonnegative"),
         CheckConstraint("commission_multiplier > 0", name="ck_assignments_multiplier_positive"),
         CheckConstraint("short_term_lesson_limit > 0", name="ck_assignments_short_term_limit_positive"),
+        CheckConstraint("commission_mode IN ('rate_multiplier', 'fixed', 'manual', 'subscription', 'percent')", name="ck_assignments_commission_mode"),
+        CheckConstraint("commission_mode <> 'subscription' OR subscription_purchase_date IS NOT NULL", name="ck_assignments_subscription_purchase_date"),
+        CheckConstraint("commission_mode <> 'percent' OR (commission_percentage > 0 AND commission_percentage <= 100)", name="ck_assignments_commission_percentage"),
     )
 
     id: Mapped[int] = mapped_column(
@@ -166,6 +195,11 @@ class Assignment(Base):
     commission_multiplier: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, server_default="4"
     )
+    commission_mode: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="rate_multiplier"
+    )
+    commission_percentage: Mapped[Optional[Decimal]] = mapped_column(Numeric, nullable=True)
+    subscription_purchase_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     short_term_lesson_limit: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default="4"
     )
@@ -198,6 +232,9 @@ class Assignment(Base):
     payments: Mapped[list["Payment"]] = relationship(
         back_populates="assignment"
     )
+    commission_accruals: Mapped[list["CommissionAccrual"]] = relationship(
+        back_populates="assignment"
+    )
 
 
 Index(
@@ -212,6 +249,12 @@ Index(
     unique=True,
     postgresql_where=Assignment.close_operation_key.is_not(None),
 )
+Index("uq_tutors_active_nickname_ci", func.lower(func.btrim(Tutor.nickname)), unique=True,
+      postgresql_where=Tutor.is_active.is_(True))
+Index("uq_clients_active_nickname_ci", func.lower(func.btrim(Client.nickname)), unique=True,
+      postgresql_where=Client.is_active.is_(True))
+Index("uq_lead_sources_active_name_ci", func.lower(func.btrim(LeadSource.name)), unique=True,
+      postgresql_where=LeadSource.is_active.is_(True))
 
 
 class Payment(Base):
@@ -254,6 +297,45 @@ class Payment(Base):
     assignment: Mapped["Assignment"] = relationship(
         back_populates="payments"
     )
+    refunds: Mapped[list["PaymentRefund"]] = relationship(back_populates="payment")
+
+
+class CommissionAccrual(Base):
+    __tablename__ = "commission_accruals"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_commission_accrual_amount_nonnegative"),
+        CheckConstraint("event_type IN ('lesson', 'threshold', 'subscription', 'closure')", name="ck_commission_accrual_event_type"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    assignment_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("assignments.id"), nullable=False, index=True)
+    lesson_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("lessons.id"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    operation_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.current_timestamp())
+
+    assignment: Mapped["Assignment"] = relationship(back_populates="commission_accruals")
+    lesson: Mapped[Optional["Lesson"]] = relationship()
+
+
+class PaymentRefund(Base):
+    __tablename__ = "payment_refunds"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_payment_refunds_amount_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    assignment_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("assignments.id"), nullable=False, index=True)
+    payment_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("payments.id"), nullable=False, index=True)
+    refund_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    author: Mapped[str] = mapped_column(String(128), nullable=False)
+    operation_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.current_timestamp())
+
+    payment: Mapped["Payment"] = relationship(back_populates="refunds")
 
 
 
@@ -316,6 +398,8 @@ Index(
     unique=True,
     postgresql_where=Lesson.operation_key.is_not(None),
 )
+Index("uq_commission_accruals_lesson_id", CommissionAccrual.lesson_id, unique=True,
+      postgresql_where=CommissionAccrual.lesson_id.is_not(None))
 
 class Lead(Base):
     __tablename__ = "leads"
@@ -365,6 +449,27 @@ class Lead(Base):
     client: Mapped["Client"] = relationship()
 
     source: Mapped["LeadSource"] = relationship()
+    status_history: Mapped[list["LeadStatusHistory"]] = relationship(
+        back_populates="lead", order_by="LeadStatusHistory.id", cascade="all, delete-orphan"
+    )
+
+
+class LeadStatusHistory(Base):
+    __tablename__ = "lead_status_history"
+    __table_args__ = (
+        CheckConstraint("old_status IN ('new', 'in_progress', 'assigned', 'lost')", name="ck_lead_status_history_old_status"),
+        CheckConstraint("new_status IN ('new', 'in_progress', 'assigned', 'lost')", name="ck_lead_status_history_new_status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    lead_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("leads.id"), nullable=False, index=True)
+    old_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    new_status: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    changed_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.current_timestamp())
+
+    lead: Mapped["Lead"] = relationship(back_populates="status_history")
 
 Index(
     "uq_payments_operation_key",

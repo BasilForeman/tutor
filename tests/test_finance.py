@@ -3,7 +3,7 @@ import unittest
 from decimal import Decimal
 from types import SimpleNamespace
 
-from bot.database.models import AssignmentAdjustment
+from bot.database.models import AssignmentAdjustment, CommissionAccrual
 from bot.services.finance import close_assignment, short_term_commission
 
 
@@ -49,6 +49,8 @@ class FakeCloseSession:
             close_reason=None,
             closed_by=None,
             payment_due_date=None,
+            commission_mode="rate_multiplier",
+            commission_percentage=None,
         )
         self.lesson_count = lesson_count
         self.earnings = earnings
@@ -112,6 +114,34 @@ class CloseAssignmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_async(close_assignment(session, 9, "reason", "", "close-12"))
         self.assertEqual(session.commits, 0)
+
+    def test_percent_commission_settles_from_actual_paid_earnings(self):
+        session = FakeCloseSession(2, Decimal("2000"))
+        session.assignment.commission_mode = "percent"
+        session.assignment.commission_percentage = Decimal("10")
+        session.assignment.commission_amount = Decimal("0")
+        _, adjustment = self.run_async(close_assignment(
+            session, 9, "Завершено", "Sonya", "percent-close-1"
+        ))
+        self.assertEqual(adjustment.new_amount, Decimal("200.00"))
+
+    def test_subscription_preserves_the_pre_agreed_commission_on_close(self):
+        session = FakeCloseSession(2, Decimal("2000"))
+        session.assignment.commission_mode = "subscription"
+        _, adjustment = self.run_async(close_assignment(
+            session, 9, "Завершено", "Sonya", "subscription-close-1"
+        ))
+        self.assertIsNone(adjustment)
+
+    def test_fixed_commission_is_accrued_when_closed_before_threshold(self):
+        session = FakeCloseSession(2, Decimal("2000"))
+        session.assignment.commission_mode = "fixed"
+        _, adjustment = self.run_async(close_assignment(
+            session, 9, "Завершено", "Sonya", "fixed-close-1"
+        ))
+        self.assertIsNone(adjustment)
+        accrual = next(item for item in session.added if isinstance(item, CommissionAccrual))
+        self.assertEqual((accrual.event_type, accrual.amount), ("closure", Decimal("4000")))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,22 @@
+# Disposable PostgreSQL for migration/integration checks only.
+# Data lives in the container's tmpfs and disappears when it is removed.
+name: tutor-bot-disposable-test
+
+services:
+  db-test:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: tutor_bot_test
+      POSTGRES_USER: tutor_test
+      POSTGRES_PASSWORD: tutor_test_only
+    ports:
+      - "127.0.0.1:55433:5432"
+    shm_size: 256mb
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,size=512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tutor_test -d tutor_bot_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: "no"

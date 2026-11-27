@@ -20,9 +20,15 @@ def get_main_menu():
             KeyboardButton(text="💵 Записать платёж"),
         ],
         [
+            KeyboardButton(text="⚖️ Корректировка комиссии"),
+            KeyboardButton(text="↩️ Возврат платежа"),
+        ],
+        [
             KeyboardButton(text="📣 Источники"),
             KeyboardButton(text="📥 Заявки"),
         ],
+        [KeyboardButton(text="📊 Синхронизировать Sheets")],
+        [KeyboardButton(text="📈 Аналитика")],
     ]
 
     return ReplyKeyboardMarkup(

@@ -7,6 +7,10 @@ def get_clients_menu():
         keyboard=[
             [KeyboardButton(text="➕ Добавить ученика")],
             [KeyboardButton(text="📋 Список учеников")],
+            [KeyboardButton(text="🗄 Архивные ученики")],
+            [KeyboardButton(text="🔎 Поиск / карточка ученика")],
+            [KeyboardButton(text="✏️ Изменить ученика")],
+            [KeyboardButton(text="📦 Архивировать ученика")],
             [KeyboardButton(text="⬅️ Главное меню")],
         ],
         resize_keyboard=True,
