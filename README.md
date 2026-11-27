@@ -20,7 +20,7 @@ See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for exact local startup instruction
 - Import smoke check: set a dummy `DATABASE_URL` and import the modules; it does not verify database connectivity.
 - Database/schema and Google Sheets scripts connect to configured services. Run them only after checking that `.env` points to local/test resources.
 - Migration status is not recorded in a version table. The current local schema was inspected read-only and has the structural signatures through 0012, but the exact migration execution history cannot be proven. Do not rerun migrations against it; see [AUDIT_REPORT.md](docs/AUDIT_REPORT.md).
-- On 2026-11-27 migrations 0001–0013 passed on disposable PostgreSQL 17. The 0013 batch-payment migration also preserved and linked a historical synthetic payment; multi-assignment allocation, idempotent replay, analytics and Sheets snapshot were verified on the disposable cluster. The earlier test Google spreadsheet and Telegram bot were used only in their previously authorized synthetic smoke tests; this change was not live-synced or interactively tested in Telegram.
+- On 2026-11-27 migrations 0001–0014 passed on disposable PostgreSQL 17. The 0014 advance migration and reusable allocations were checked with synthetic payments; payment history, analytics and assignment balances were queried. This change was not live-synced to Sheets or interactively tested in Telegram.
 
 ### Disposable PostgreSQL migration checks
 
@@ -30,7 +30,7 @@ The isolated test service has its own port (55433), credentials, and a tmpfs dat
 docker compose -f docker-compose.test.yml up -d --wait db-test
 ```
 
-Apply reviewed migrations 0001–0013 only to `tutor_bot_test` at `127.0.0.1:55433`. Migration 0013 adds parent tutor payment receipts and allocation links while preserving historical payment rows. The test cluster has no persistent data. Remove only the test service after checking with:
+Apply reviewed migrations 0001–0014 only to `tutor_bot_test` at `127.0.0.1:55433`. Migration 0013 adds parent tutor payment receipts and allocation links while preserving historical payment rows. Migration 0014 replaces the unique payment-batch/assignment index with a nonunique index, allowing a previously received advance to be allocated to an assignment later. The service still locks the receipt and enforces that total allocations never exceed the received amount. The test cluster has no persistent data. Remove only the test service after checking with:
 
 ```sh
 docker compose -f docker-compose.test.yml rm -sf db-test
@@ -42,4 +42,4 @@ The integration uses a Google Cloud service account JSON file via `google-auth` 
 
 ## Core workflows
 
-The five top-level sections are **New Assignment**, **Lessons**, **Payouts**, **Tutors**, and **Statistics**. A payout is entered as one actual receipt from a tutor and then manually allocated across that tutor's outstanding assignments. The allocation total must match the receipt and cannot exceed any assignment balance. The database stores one parent receipt plus per-assignment `payments` rows atomically; the Payouts menu includes a linked history view. See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the interaction format and safe test procedure.
+The five top-level sections are **New Assignment**, **Lessons**, **Payouts**, **Tutors**, and **Statistics**. A payout is entered as one actual receipt from a tutor and manually allocated across outstanding assignments. Any unallocated remainder is stored as an advance only after explicit confirmation; it does not create commission. The advance can later be manually allocated through **🪙 Распределить аванс**. The receipt stores one parent row plus append-only per-assignment `payments` rows; total allocations cannot exceed the receipt or an assignment's outstanding debt. See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the interaction and safe test procedure.

@@ -55,11 +55,17 @@ async def create_payment(
 async def get_refundable_payments(session: AsyncSession, assignment_id: int):
     result = await session.execute(text("""
         SELECT p.id, p.payment_date, p.amount,
+               p.payment_batch_id,b.payment_date AS received_date,b.amount AS received_total,
+               a.tutor_id,t.nickname AS tutor,a.client_id,c.nickname AS client,c.contact AS client_contact,
                p.amount - COALESCE(SUM(r.amount), 0::NUMERIC) AS refundable_amount
         FROM payments AS p
+        JOIN payment_batches b ON b.id=p.payment_batch_id
+        JOIN assignments a ON a.id=p.assignment_id
+        JOIN tutors t ON t.id=a.tutor_id
+        JOIN clients c ON c.id=a.client_id
         LEFT JOIN payment_refunds AS r ON r.payment_id = p.id
         WHERE p.assignment_id = :assignment_id
-        GROUP BY p.id
+        GROUP BY p.id,b.id,a.id,t.id,c.id
         HAVING p.amount - COALESCE(SUM(r.amount), 0::NUMERIC) > 0
         ORDER BY p.payment_date, p.id
     """), {"assignment_id": assignment_id})

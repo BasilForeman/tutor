@@ -9,6 +9,9 @@ class NoDatabaseSession:
     async def scalar(self, *_args, **_kwargs):
         raise AssertionError("validation should happen before database access")
 
+    async def rollback(self):
+        return None
+
 
 class TutorPaymentInputTests(unittest.TestCase):
     def run_async(self, operation):
@@ -30,6 +33,22 @@ class TutorPaymentInputTests(unittest.TestCase):
             self.run_async(create_tutor_payment_batch(
                 NoDatabaseSession(), tutor_id=1, amount=Decimal("100"),
                 allocations=[(1, Decimal("60")), (2, Decimal("30"))], operation_key="test-key",
+            ))
+
+    def test_explicit_advance_allows_unallocated_remainder(self):
+        with self.assertRaisesRegex(AssertionError, "validation should happen before database access"):
+            self.run_async(create_tutor_payment_batch(
+                NoDatabaseSession(), tutor_id=1, amount=Decimal("100"),
+                allocations=[(1, Decimal("60"))], operation_key="advance-key",
+                allow_advance=True,
+            ))
+
+    def test_advance_does_not_allow_allocations_over_received_amount(self):
+        with self.assertRaisesRegex(ValueError, "больше полученного"):
+            self.run_async(create_tutor_payment_batch(
+                NoDatabaseSession(), tutor_id=1, amount=Decimal("100"),
+                allocations=[(1, Decimal("101"))], operation_key="advance-key",
+                allow_advance=True,
             ))
 
     def test_rejects_non_decimal_payment_amount_before_database_access(self):

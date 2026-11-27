@@ -9,7 +9,7 @@ from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from bot.database.connection import async_session
 from bot.keyboards.main_menu import get_main_menu, get_transfers_menu
-from bot.services.assignments import create_assignment, create_manual_assignment, get_assignments
+from bot.services.assignments import create_assignment, create_manual_assignment, get_assignment_display_rows, get_assignments
 from bot.services.finance import close_assignment
 from bot.services.leads import get_leads
 from bot.services.tutors import get_tutors
@@ -21,7 +21,7 @@ SKIP = "⏭ Пропустить"
 
 
 def choices(items, label):
-    rows = [[KeyboardButton(text=f"{item.id} | {label(item)}")] for item in items]
+    rows = [[KeyboardButton(text=f"{item['id'] if isinstance(item, dict) else item.id} | {label(item)}")] for item in items]
     rows.append([KeyboardButton(text=CANCEL)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -439,8 +439,13 @@ async def confirm_assignment(message: Message, state: FSMContext):
             if created[key]
         )
         detail = f"\nДобавлены новые записи: {detail[1:]}" if detail != "\n" else "\nИспользованы существующие записи."
+    async with async_session() as session:
+        created_row = next((row for row in await get_assignment_display_rows(session)
+                            if row["id"] == assignment.id), None)
+    people = (f"\nУченик: {escape(created_row['client'])}; репетитор: {escape(created_row['tutor'])}"
+              if created_row else "")
     await message.answer(
-        f"✅ Передача №{assignment.id} создана.{detail}",
+        f"✅ Передача №{assignment.id} создана.{people}{detail}",
         reply_markup=get_main_menu(),
     )
 
@@ -449,22 +454,22 @@ async def confirm_assignment(message: Message, state: FSMContext):
 async def list_assignments(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:
-        assignments = await get_assignments(session)
+        assignments = await get_assignment_display_rows(session)
     if not assignments:
         await message.answer("Передач пока нет.", reply_markup=get_main_menu())
         return
     lines = ["<b>Последние передачи:</b>"]
     for item in assignments[:30]:
         terms = _commission_summary({
-            "commission_mode": item.commission_mode,
-            "commission_amount": str(item.commission_amount),
-            "commission_multiplier": str(item.commission_multiplier),
-            "commission_percentage": str(item.commission_percentage or ""),
-            "subscription_purchase_date": item.subscription_purchase_date.isoformat() if item.subscription_purchase_date else "",
+            "commission_mode": item["commission_mode"],
+            "commission_amount": str(item["commission_amount"]),
+            "commission_multiplier": str(item["commission_multiplier"]),
+            "commission_percentage": str(item["commission_percentage"] or ""),
+            "subscription_purchase_date": item["subscription_purchase_date"].isoformat() if item["subscription_purchase_date"] else "",
         })
         lines.append(
-            f"№{item.id} | заявка №{item.lead_id} | репетитор №{item.tutor_id} | "
-            f"ученик №{item.client_id} | комиссия: {escape(terms)}"
+            f"№{item['id']} | ученик: {escape(item['client'])} | репетитор: {escape(item['tutor'])} | "
+            f"комиссия: {escape(terms)}"
         )
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=get_main_menu())
 
@@ -473,8 +478,7 @@ async def list_assignments(message: Message, state: FSMContext):
 async def start_close_assignment(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:
-        assignments = await get_assignments(session)
-    open_assignments = [item for item in assignments if not item.is_closed]
+        open_assignments = await get_assignment_display_rows(session, open_only=True)
     if not open_assignments:
         await message.answer("Нет открытых передач.", reply_markup=get_main_menu())
         return
@@ -482,7 +486,7 @@ async def start_close_assignment(message: Message, state: FSMContext):
     await state.set_state(AssignmentForm.close_assignment)
     await message.answer(
         "Выбери передачу, обучение по которой завершилось:",
-        reply_markup=choices(open_assignments, lambda item: f"Передача №{item.id}, ученик {item.client_id}"),
+        reply_markup=choices(open_assignments, lambda item: f"Передача №{item['id']}, {item['client']} — {item['tutor']}"),
     )
 
 
@@ -490,15 +494,17 @@ async def start_close_assignment(message: Message, state: FSMContext):
 async def select_close_assignment(message: Message, state: FSMContext):
     assignment_id = parse_id(message.text)
     async with async_session() as session:
-        assignments = await get_assignments(session)
-    assignment = next((item for item in assignments if item.id == assignment_id and not item.is_closed), None)
+        assignments = await get_assignment_display_rows(session, open_only=True)
+    assignment = next((item for item in assignments if item["id"] == assignment_id), None)
     if not assignment:
         await message.answer("Открытая передача не найдена. Выбери её кнопкой.")
         return
     await state.update_data(
-        assignment_id=assignment.id,
-        short_term_lesson_limit=assignment.short_term_lesson_limit,
-        commission_mode=assignment.commission_mode,
+        assignment_id=assignment["id"],
+        short_term_lesson_limit=assignment["short_term_lesson_limit"],
+        commission_mode=assignment["commission_mode"],
+        client_name=assignment["client"],
+        tutor_name=assignment["tutor"],
     )
     await state.set_state(AssignmentForm.close_reason)
     await message.answer("Укажи причину завершения обучения:", reply_markup=text_keyboard(CANCEL))
@@ -543,7 +549,7 @@ async def confirm_close_assignment(message: Message, state: FSMContext):
     else:
         outcome = f"Согласованная комиссия к оплате: {assignment.commission_amount}."
     await message.answer(
-        f"✅ Передача №{assignment.id} закрыта. {outcome}",
+        f"✅ Передача №{assignment.id} ({data['client_name']} — {data['tutor_name']}) закрыта. {outcome}",
         reply_markup=get_main_menu(),
     )
 

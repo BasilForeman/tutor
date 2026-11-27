@@ -348,6 +348,37 @@ async def get_assignments(
     return list(result.all())
 
 
+async def get_assignment_display_rows(
+    session: AsyncSession, *, positive_debt_only: bool = False,
+    overpaid_only: bool = False, open_only: bool = False,
+):
+    """Return assignments with names and read-only financial/lesson aggregates for Telegram lists."""
+    from sqlalchemy import text
+
+    conditions = []
+    if positive_debt_only:
+        conditions.append("f.remaining_amount > 0")
+    if overpaid_only:
+        conditions.append("f.remaining_amount < 0")
+    if open_only:
+        conditions.append("NOT a.is_closed")
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    result = await session.execute(text(f"""SELECT a.id,a.assignment_date,a.is_closed,
+        a.commission_mode,a.commission_multiplier,a.commission_percentage,a.rate,a.short_term_lesson_limit,
+        a.subscription_purchase_date,a.tutor_id,t.nickname AS tutor,
+        a.client_id,c.nickname AS client,c.contact AS client_contact,
+        f.commission_amount,f.agreed_commission,f.paid_amount,f.remaining_amount,
+        COALESCE(ls.paid_lessons,0) AS paid_lessons
+        FROM assignments a JOIN tutors t ON t.id=a.tutor_id
+        JOIN clients c ON c.id=a.client_id
+        JOIN assignment_finances f ON f.assignment_id=a.id
+        LEFT JOIN (SELECT assignment_id,COUNT(*) AS paid_lessons FROM lessons
+          WHERE lesson_type='paid' AND status='completed' GROUP BY assignment_id) ls ON ls.assignment_id=a.id
+        {where}
+        ORDER BY a.assignment_date DESC,a.id DESC"""))
+    return list(result.mappings().all())
+
+
 async def get_assignment_by_id(
     session: AsyncSession,
     assignment_id: int,

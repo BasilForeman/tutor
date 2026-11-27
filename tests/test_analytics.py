@@ -36,7 +36,7 @@ class AnalyticsTests(unittest.IsolatedAsyncioTestCase):
              "active_assignments": 1, "closed_assignments": 1,
              "completed_lessons": 7, "trial_lessons": 1, "paid_lessons": 6,
              "cancelled_lessons": 2, "earnings": Decimal("900"),
-             "payments": Decimal("500"), "refunds": Decimal("100"),
+             "payments": Decimal("500"), "allocated_payments": Decimal("400"), "refunds": Decimal("100"),
              "commission_accrued": Decimal("250"), "current_debt": Decimal("350"),
              "debtor_tutors": 1, "average_tutor_debt": Decimal("350"),
              "refund_count": 1},
@@ -86,7 +86,7 @@ class AnalyticsTests(unittest.IsolatedAsyncioTestCase):
             "closed_assignments": 1, "completed_lessons": 4, "trial_lessons": 1,
             "paid_lessons": 3, "cancelled_lessons": 0,
             "earnings": Decimal("450"), "commission_accrued": Decimal("120"),
-            "net_payments": Decimal("200"), "payments": Decimal("250"),
+            "net_payments": Decimal("200"), "payments": Decimal("250"), "allocated_payments": Decimal("200"),
             "refunds": Decimal("50"), "refund_count": 1,
             "current_debt": Decimal("900"), "debtor_tutors": 2,
             "average_tutor_debt": Decimal("450"),
@@ -101,6 +101,7 @@ class AnalyticsTests(unittest.IsolatedAsyncioTestCase):
         }
         output = format_analytics(report)
         self.assertIn("Платежи получены: 250.00", output)
+        self.assertIn("Распределено в счёт комиссии за период: 200.00", output)
         self.assertIn("нетто: 200.00", output)
         self.assertIn("Текущий долг: 900.00", output)
         self.assertIn("Referral: 2 / 1 / 50.00%", output)

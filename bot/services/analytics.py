@@ -53,7 +53,8 @@ async def get_analytics(session: AsyncSession, start_date: date, end_date: date)
         (SELECT COUNT(*) FROM lessons WHERE lesson_date BETWEEN :start AND :end AND status='cancelled') AS cancelled_lessons,
         COALESCE((SELECT SUM(amount) FROM lessons WHERE lesson_date BETWEEN :start AND :end
           AND lesson_type='paid' AND status='completed'),0) AS earnings,
-        COALESCE((SELECT SUM(amount) FROM payments WHERE payment_date BETWEEN :start AND :end),0) AS payments,
+        COALESCE((SELECT SUM(amount) FROM payment_batches WHERE payment_date BETWEEN :start AND :end),0) AS payments,
+        COALESCE((SELECT SUM(amount) FROM payments WHERE payment_date BETWEEN :start AND :end),0) AS allocated_payments,
         COALESCE((SELECT SUM(amount) FROM payment_refunds WHERE refund_date BETWEEN :start AND :end),0) AS refunds,
         COALESCE((SELECT SUM(amount) FROM commission_accruals WHERE created_at::date BETWEEN :start AND :end),0)
           + COALESCE((SELECT SUM(difference) FROM assignment_adjustments WHERE created_at::date BETWEEN :start AND :end),0)
@@ -95,10 +96,9 @@ async def get_analytics(session: AsyncSession, start_date: date, end_date: date)
           WHERE a.tutor_id=t.id AND c.created_at::date BETWEEN :start AND :end)
           + (SELECT COALESCE(SUM(x.difference),0) FROM assignment_adjustments x JOIN assignments a ON a.id=x.assignment_id
           WHERE a.tutor_id=t.id AND x.created_at::date BETWEEN :start AND :end) AS commission_accrued,
-        (SELECT COALESCE(SUM(p.amount),0)-COALESCE((SELECT SUM(r.amount) FROM payment_refunds r
+        (SELECT COALESCE(SUM(b.amount),0)-COALESCE((SELECT SUM(r.amount) FROM payment_refunds r
           JOIN assignments ar ON ar.id=r.assignment_id WHERE ar.tutor_id=t.id AND r.refund_date BETWEEN :start AND :end),0)
-          FROM payments p JOIN assignments a ON a.id=p.assignment_id
-          WHERE a.tutor_id=t.id AND p.payment_date BETWEEN :start AND :end) AS net_payments,
+          FROM payment_batches b WHERE b.tutor_id=t.id AND b.payment_date BETWEEN :start AND :end) AS net_payments,
         (SELECT COUNT(*) FROM payment_refunds r JOIN assignments a ON a.id=r.assignment_id
           WHERE a.tutor_id=t.id AND r.refund_date BETWEEN :start AND :end) AS refund_count,
         (SELECT COALESCE(SUM(GREATEST(f.remaining_amount,0)),0) FROM assignment_finances f
@@ -119,7 +119,7 @@ async def get_analytics(session: AsyncSession, start_date: date, end_date: date)
     daily = (await session.execute(text("""SELECT d.day::date AS day,
         (SELECT COUNT(*) FROM assignments a WHERE a.assignment_date=d.day::date) AS transfers,
         (SELECT COUNT(*) FROM lessons l WHERE l.lesson_date=d.day::date AND l.status='completed') AS lessons,
-        (SELECT COALESCE(SUM(p.amount),0) FROM payments p WHERE p.payment_date=d.day::date)
+        (SELECT COALESCE(SUM(p.amount),0) FROM payment_batches p WHERE p.payment_date=d.day::date)
           - (SELECT COALESCE(SUM(r.amount),0) FROM payment_refunds r WHERE r.refund_date=d.day::date) AS net_payments,
         (SELECT COALESCE(SUM(c.amount),0) FROM commission_accruals c WHERE c.created_at::date=d.day::date)
           + (SELECT COALESCE(SUM(x.difference),0) FROM assignment_adjustments x WHERE x.created_at::date=d.day::date) AS commission_accrued
@@ -162,6 +162,7 @@ def format_analytics(report: dict, *, limit: int = 8) -> str:
         f"Заработок по платным занятиям: {_money(report['earnings'])}",
         f"Комиссия начислена за период: {_money(report.get('commission_accrued', 0))}",
         f"Платежи получены: {_money(report['payments'])} | возвраты денег: {_money(report['refunds'])} | нетто: {_money(report['net_payments'])}",
+        f"Распределено в счёт комиссии за период: {_money(report.get('allocated_payments', 0))}",
         f"Текущий долг: {_money(report.get('current_debt', report.get('overdue_amount', 0)))} | репетиторов с долгом: {report.get('debtor_tutors', report.get('overdue_assignments', 0))} | средний долг: {_money(report.get('average_tutor_debt', 0))}",
     ]
     if report.get("sources"):

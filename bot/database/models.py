@@ -325,7 +325,7 @@ class Payment(Base):
     refunds: Mapped[list["PaymentRefund"]] = relationship(back_populates="payment")
 
 
-Index("uq_payments_batch_assignment", Payment.payment_batch_id, Payment.assignment_id, unique=True)
+Index("ix_payments_batch_assignment", Payment.payment_batch_id, Payment.assignment_id)
 
 
 class CommissionAccrual(Base):

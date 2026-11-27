@@ -222,7 +222,7 @@ async def tutor_search(message: Message, state: FSMContext):
         if profile["assignments"]:
             lines.append("\n<b>Последние передачи:</b>")
             lines.extend(
-                f"• №{item['id']} от {item['assignment_date']}: {escape(item['client'])}; "
+                f"• №{item['id']} от {item['assignment_date']}: {escape(item['client'])} — {escape(summary['nickname'])}; "
                 f"{'закрыта' if item['is_closed'] else 'активна'}; комиссия {item['commission_amount']} ₽; "
                 f"долг {item['remaining_amount']} ₽; занятий {item['completed_lessons']} "
                 f"(пробных {item['trial_lessons']}, платных {item['paid_lessons']})"
@@ -232,7 +232,7 @@ async def tutor_search(message: Message, state: FSMContext):
             lines.append("\n<b>Последние платежи:</b>")
             lines.extend(
                 f"• Платёж №{item['batch']['id']} от {item['batch']['payment_date']}: {item['batch']['amount']} ₽; "
-                f"распределено {item['batch']['allocated']} ₽"
+                f"распределено {item['batch']['allocated']} ₽; аванс {item['batch']['advance']} ₽"
                 for item in profile["payments"][:10]
             )
         await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=get_tutors_menu())

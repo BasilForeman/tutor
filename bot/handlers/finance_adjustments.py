@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from bot.database.connection import async_session
 from bot.keyboards.main_menu import get_main_menu
-from bot.services.assignments import get_assignments
+from bot.services.assignments import get_assignment_display_rows
 from bot.services.finance import adjust_assignment_commission
 from bot.services.payments import get_refundable_payments, refund_payment
 from bot.states.finance import CommissionAdjustmentForm, RefundForm
@@ -28,14 +28,15 @@ def keyboard(rows):
 async def start_adjustment(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:
-        assignments = await get_assignments(session)
+        assignments = await get_assignment_display_rows(session)
     if not assignments:
         await message.answer("Передач пока нет.", reply_markup=get_main_menu())
         return
     await state.update_data(operation_key=uuid4().hex)
     await state.set_state(CommissionAdjustmentForm.assignment)
     await message.answer("Выбери передачу для корректировки комиссии:", reply_markup=keyboard(
-        [f"{item.id} | ученик {item.client_id}, репетитор {item.tutor_id}" for item in assignments[:50]]
+        [f"{item['id']} | {item['client']} — {item['tutor']} | комиссия {item['commission_amount']} ₽, остаток {item['remaining_amount']} ₽"
+         for item in assignments[:50]]
     ))
 
 
@@ -43,20 +44,14 @@ async def start_adjustment(message: Message, state: FSMContext):
 async def start_refund(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:
-        result = await session.execute(text("""
-            SELECT assignment_id, -remaining_amount AS refund_due
-            FROM assignment_finances
-            WHERE remaining_amount < 0
-            ORDER BY assignment_id
-        """))
-        rows = result.mappings().all()
+        rows = await get_assignment_display_rows(session, overpaid_only=True)
     if not rows:
         await message.answer("Переплаты к возврату нет.", reply_markup=get_main_menu())
         return
     await state.update_data(operation_key=uuid4().hex)
     await state.set_state(RefundForm.assignment)
     await message.answer("Выбери передачу и сумму возврата:", reply_markup=keyboard(
-        [f"{row['assignment_id']} | к возврату {row['refund_due']}" for row in rows]
+        [f"{row['id']} | {row['client']} — {row['tutor']} | к возврату {-row['remaining_amount']} ₽" for row in rows]
     ))
 
 
@@ -82,17 +77,19 @@ async def choose_adjustment_assignment(message: Message, state: FSMContext):
         await message.answer("Выбери передачу кнопкой.")
         return
     async with async_session() as session:
-        result = await session.execute(text("""
-            SELECT commission_amount, paid_amount, remaining_amount
-            FROM assignment_finances WHERE assignment_id = :assignment_id
-        """), {"assignment_id": assignment_id})
-        finance = result.mappings().first()
+        assignments = await get_assignment_display_rows(session)
+        finance = next((row for row in assignments if row["id"] == assignment_id), None)
     if not finance:
         await message.answer("Финансовая карточка не найдена.")
         return
-    await state.update_data(assignment_id=assignment_id, previous_amount=str(finance["commission_amount"]))
+    await state.update_data(
+        assignment_id=assignment_id, previous_amount=str(finance["commission_amount"]),
+        assignment_label=f"Передача №{assignment_id}: {finance['client']} — {finance['tutor']}",
+    )
     await state.set_state(CommissionAdjustmentForm.amount)
     await message.answer(
+        f"Передача №{assignment_id}: {finance['client']} — {finance['tutor']}\n"
+        f"Платных занятий: {finance['paid_lessons']}\n"
         f"Текущая комиссия: {finance['commission_amount']}; оплачено: {finance['paid_amount']}; остаток: {finance['remaining_amount']}.\n"
         "Введи новую итоговую сумму комиссии:"
     )
@@ -122,7 +119,7 @@ async def enter_adjustment_reason(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.set_state(CommissionAdjustmentForm.confirmation)
     await message.answer(
-        f"Подтвердить корректировку передачи №{data['assignment_id']}?\n"
+        f"Подтвердить корректировку {data['assignment_label']}?\n"
         f"Комиссия: {data['previous_amount']} → {data['new_amount']}\nПричина: {reason}\n"
         "Если комиссия станет меньше оплаченной суммы, появится отдельный возврат к оформлению.",
         reply_markup=keyboard(["✅ Подтвердить"]),
@@ -145,7 +142,7 @@ async def confirm_adjustment(message: Message, state: FSMContext):
         return
     await state.clear()
     await message.answer(
-        f"✅ Комиссия скорректирована: {adjustment.previous_amount} → {adjustment.new_amount}.",
+        f"✅ Комиссия скорректирована для {data['assignment_label']}: {adjustment.previous_amount} → {adjustment.new_amount}.",
         reply_markup=get_main_menu(),
     )
 
@@ -158,14 +155,21 @@ async def choose_refund_assignment(message: Message, state: FSMContext):
         await message.answer("Выбери передачу кнопкой.")
         return
     async with async_session() as session:
+        rows = await get_assignment_display_rows(session, overpaid_only=True)
+        assignment = next((row for row in rows if row["id"] == assignment_id), None)
         payments = await get_refundable_payments(session, assignment_id)
     if not payments:
         await message.answer("По этой передаче нет платежей, доступных для возврата.")
         return
-    await state.update_data(assignment_id=assignment_id)
+    await state.update_data(
+        assignment_id=assignment_id,
+        assignment_label=(f"Передача №{assignment_id}: {assignment['client']} — {assignment['tutor']}"
+                          if assignment else f"Передача №{assignment_id}"),
+    )
     await state.set_state(RefundForm.payment)
     await message.answer("Выбери исходный платёж:", reply_markup=keyboard(
-        [f"{item['id']} | дата {item['payment_date']} | остаток {item['refundable_amount']}" for item in payments]
+        [f"{item['id']} | {item['client']} — {item['tutor']} | дата {item['payment_date']} | доступно {item['refundable_amount']} ₽"
+         for item in payments]
     ))
 
 
@@ -176,6 +180,7 @@ async def choose_refund_payment(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("Выбери платёж кнопкой.")
         return
+    data = await state.get_data()
     await state.update_data(payment_id=payment_id)
     await state.set_state(RefundForm.amount)
     await message.answer("Введи сумму возврата (не больше переплаты и остатка исходного платежа):")
@@ -205,8 +210,8 @@ async def enter_refund_reason(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.set_state(RefundForm.confirmation)
     await message.answer(
-        f"Подтвердить возврат {data['amount']} по платежу №{data['payment_id']} "
-        f"передачи №{data['assignment_id']}?\nПричина: {reason}",
+        f"Подтвердить возврат {data['amount']} ₽ по платежу №{data['payment_id']} "
+        f"({data['assignment_label']})?\nПричина: {reason}",
         reply_markup=keyboard(["✅ Подтвердить"]),
     )
 
@@ -226,4 +231,7 @@ async def confirm_refund(message: Message, state: FSMContext):
         await state.clear()
         return
     await state.clear()
-    await message.answer(f"✅ Возврат №{refund.id} на сумму {refund.amount} сохранён.", reply_markup=get_main_menu())
+    await message.answer(
+        f"✅ Возврат №{refund.id} на сумму {refund.amount} ₽ по {data['assignment_label']} сохранён.",
+        reply_markup=get_main_menu(),
+    )

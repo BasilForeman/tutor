@@ -8,7 +8,7 @@ from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from bot.database.connection import async_session
 from bot.keyboards.main_menu import get_main_menu, get_lessons_menu
-from bot.services.assignments import get_assignments
+from bot.services.assignments import get_assignment_display_rows
 from bot.services.lessons import create_lesson
 from bot.states.lessons import LessonForm
 
@@ -33,11 +33,11 @@ async def open_lessons_menu(message: Message, state: FSMContext):
 async def start_lesson(message: Message, state: FSMContext):
     await state.clear()
     async with async_session() as session:
-        assignments = await get_assignments(session)
+        assignments = await get_assignment_display_rows(session, open_only=True)
     if not assignments:
         await message.answer("Сначала создай передачу.", reply_markup=get_main_menu())
         return
-    rows = [f"{item.id} | ученик {item.client_id}, репетитор {item.tutor_id}" for item in assignments]
+    rows = [f"{item['id']} | {item['client']} — {item['tutor']}" for item in assignments]
     rows.append(CANCEL)
     await state.update_data(operation_key=uuid4().hex)
     await state.set_state(LessonForm.assignment)
@@ -64,11 +64,16 @@ async def choose_assignment(message: Message, state: FSMContext):
         await message.answer("Выбери передачу кнопкой.")
         return
     async with async_session() as session:
-        assignments = await get_assignments(session)
-    if not any(item.id == assignment_id for item in assignments):
+        assignments = await get_assignment_display_rows(session, open_only=True)
+    assignment = next((item for item in assignments if item["id"] == assignment_id), None)
+    if not assignment:
         await message.answer("Передача не найдена. Выбери её кнопкой.")
         return
-    await state.update_data(assignment_id=assignment_id)
+    await state.update_data(
+        assignment_id=assignment_id,
+        client_name=assignment["client"],
+        tutor_name=assignment["tutor"],
+    )
     await state.set_state(LessonForm.lesson_type)
     await message.answer("Тип занятия:", reply_markup=keyboard(["Платное", "Пробное", CANCEL]))
 
@@ -138,7 +143,8 @@ async def enter_notes(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.set_state(LessonForm.confirmation)
     await message.answer(
-        f"Подтвердить занятие по передаче №{data['assignment_id']}?\n"
+        f"Подтвердить занятие по передаче №{data['assignment_id']} "
+        f"({data['client_name']} — {data['tutor_name']})?\n"
         f"Тип: {data['lesson_type']} | статус: {data['status']}\n"
         f"Дата: {data['lesson_date']} | заработок: {data.get('amount') or '—'}",
         reply_markup=keyboard(["✅ Подтвердить", CANCEL]),
@@ -165,7 +171,11 @@ async def confirm_lesson(message: Message, state: FSMContext):
         await message.answer(f"⚠️ {error}", reply_markup=get_main_menu())
         return
     await state.clear()
-    await message.answer(f"✅ Занятие №{lesson.id} записано.", reply_markup=get_main_menu())
+    await message.answer(
+        f"✅ Занятие №{lesson.id} по передаче №{data['assignment_id']} "
+        f"({data['client_name']} — {data['tutor_name']}) записано.",
+        reply_markup=get_main_menu(),
+    )
 
 
 @router.message(F.text == "⬅️ Главное меню")
